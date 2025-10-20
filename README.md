@@ -1,2 +1,80 @@
-# TTTGmod
-moves player in discord into another channel once killed if their is more than one dead player otherwise they just get muted
+# TTTGmod Voice Safety Suite
+
+This repository contains two components that work together to keep Discord voice chat in sync with Garry's Mod Trouble in Terrorist Town (TTT) rounds.
+
+## Components
+
+### 1. Garry's Mod Event Emitter (`gmod/ttt_event_emitter.lua`)
+* Hooks into core TTT events and sends lightweight JSON payloads to the webhook (defaults to `http://127.0.0.1:3000/ttt`).
+* Emits the following events with `event`, `steamid64`, `server_id`, and `round_id` fields:
+  * `round_prepare`, `round_start`, `round_end`
+  * `death`, `spectate`, `spawn`
+* Generates deterministic round identifiers and logs failures to the server console.
+* Tracks per-player life state to avoid duplicate notifications and only sends `spawn` when a player respawns mid-round.
+* Runtime configuration via ConVars (all archived for persistence, set them in `server.cfg` or via RCON as needed):
+  * `ttt_discord_endpoint` — webhook URL; set to your bot host if it is on another machine.
+  * `ttt_discord_server_id` — label that appears in webhook payloads; keep this in sync with the bot's `SERVER_ID` env for clarity.
+  * `ttt_discord_secret` — optional shared secret; when set the emitter HMAC-signs each payload using SHA-256, matching the bot's `TTT_SHARED_SECRET` check.
+
+Copy the file to your server (e.g. `garrysmod/lua/autorun/server/`) and adjust the `ttt_discord_*` ConVars if required.
+
+### 2. Discord Bot + Webhook (`bot/index.js`)
+* Express endpoint (`POST /ttt`) receives the event payloads and mirrors player status into Discord voice.
+* Uses `discord.js@14` to:
+  * Server-mute linked members on `death`/`spectate` when they are in voice.
+  * Unmute on `spawn`/`revive` and for every round boundary (`round_prepare`, `round_start`, `round_end`).
+  * Maintain an optional “dead chat” private thread per round when `ENABLE_DEAD_TEXT=1` and `DEAD_TEXT_PARENT_CHANNEL_ID` are set.
+* Persists SteamID64 → Discord user mappings plus dead-thread metadata in `bot/data/state.json`.
+* Provides guild text commands (Manage Server permission required):
+  * `!link <steamid64> @user`
+  * `!unlink <steamid64|@user>`
+  * `!reset`
+  * `!status`
+* Supports optional HMAC protection via the `X-TTT-SIGN` header when `TTT_SHARED_SECRET` is configured.
+
+Install dependencies in the `bot/` directory and start the bot:
+
+```bash
+cd bot
+npm install
+node index.js
+```
+
+> **Why does `npm install` fail in the CI logs?**
+>
+> The sandbox used for automated checks has no outbound network access, so any attempt to reach the public npm registry
+> returns a `403` error. The application itself is fine—`npm install` succeeds as soon as it can reach a regular npm
+> mirror. When running locally or on your deployment target, make sure the host has internet access (or a private npm
+> proxy) and rerun `npm install` from inside the `bot/` folder. Once the dependencies are downloaded, you can start the
+> bot with `npm start` or `node index.js` as shown above.
+
+If your environment also blocks outbound npm access, download the packages on another machine and copy the resulting
+`node_modules/` directory (or use an internal npm proxy such as Verdaccio or Artifactory). After the dependencies are in
+place, the runtime commands remain the same.
+
+Create a `.env` (or set environment variables) with at least:
+
+```
+DISCORD_TOKEN=...
+PORT=3000
+SERVER_ID=gmod-1
+# Optional hardening
+ALLOWED_GUILD_ID=...
+TTT_SHARED_SECRET=...
+ENABLE_DEAD_TEXT=1
+DEAD_TEXT_PARENT_CHANNEL_ID=...
+```
+
+### Self-hosted / Listen Server Setups
+When a player is hosting the match (listen server or peer-to-peer style), that machine also runs the Lua emitter. You have two options for the webhook:
+
+1. **Run the Discord bot on the host's machine.** Leave `ttt_discord_endpoint` at the default `http://127.0.0.1:3000/ttt` so the in-game emitter can reach the local Express listener directly.
+2. **Run the Discord bot elsewhere.** Change `ttt_discord_endpoint` to the bot machine's reachable address, e.g. `http://192.168.1.50:3000/ttt`. Ensure port `3000` (or your chosen `PORT`) is open through any firewalls/NAT. If you enable `TTT_SHARED_SECRET`, set the same value in both the bot environment and the in-game convar `ttt_discord_secret`.
+
+The emitter is fire-and-forget; if the host leaves and another player becomes the listen server, update the ConVars on the new host accordingly.
+
+## Development Notes
+* The bot never moves users between channels or toggles server deafen; it only adjusts the server mute flag.
+* When the webhook receives round boundary events, it forcibly unmutes everyone currently in voice to recover from manual overrides or missed updates.
+* All Discord actions are idempotent—duplicate events simply no-op when the desired state is already set.
+* The Garry's Mod emitter uses fire-and-forget HTTP requests; failures are logged without retry spam.

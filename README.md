@@ -36,6 +36,18 @@ npm install
 node index.js
 ```
 
+> **Why does `npm install` fail in the CI logs?**
+>
+> The sandbox used for automated checks has no outbound network access, so any attempt to reach the public npm registry
+> returns a `403` error. The application itself is fine—`npm install` succeeds as soon as it can reach a regular npm
+> mirror. When running locally or on your deployment target, make sure the host has internet access (or a private npm
+> proxy) and rerun `npm install` from inside the `bot/` folder. Once the dependencies are downloaded, you can start the
+> bot with `npm start` or `node index.js` as shown above.
+
+If your environment also blocks outbound npm access, download the packages on another machine and copy the resulting
+`node_modules/` directory (or use an internal npm proxy such as Verdaccio or Artifactory). After the dependencies are in
+place, the runtime commands remain the same.
+
 Create a `.env` (or set environment variables) with at least:
 
 ```
